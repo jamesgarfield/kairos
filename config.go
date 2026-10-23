@@ -86,7 +86,10 @@ func (c Config) withDefaults() Config {
 	}
 	if c.NewTransport == nil {
 		c.NewTransport = func() *http.Transport {
-			return http.DefaultTransport.(*http.Transport).Clone()
+			if t, ok := http.DefaultTransport.(*http.Transport); ok {
+				return t.Clone()
+			}
+			return &http.Transport{Proxy: http.ProxyFromEnvironment}
 		}
 	}
 	return c

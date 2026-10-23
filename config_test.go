@@ -107,3 +107,18 @@ func TestDateHeaderSanity(t *testing.T) {
 		t.Fatalf("missing header error = %v", err)
 	}
 }
+
+type wrappedRT struct{}
+
+func (wrappedRT) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
+
+func TestDefaultNewTransportWrappedDefault(t *testing.T) {
+	orig := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = orig })
+	http.DefaultTransport = wrappedRT{}
+
+	c := Config{Target: time.Unix(1, 0), Request: testRequest}.withDefaults()
+	if c.NewTransport() == nil {
+		t.Fatal("NewTransport returned nil")
+	}
+}
