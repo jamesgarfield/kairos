@@ -24,7 +24,9 @@ const sweepMaxHalf = 25
 
 // Calibrate measures the stamp delay (server clock minus local send time,
 // including one-way latency) against the calibration endpoint, optionally
-// combines it with the reference clock, and warms every worker connection.
+// combines it with the reference clock, and warms every worker connection:
+// after a probe, every client sends one warm-up calibration request, excluded
+// from the estimates, so no sample carries connection setup time.
 func (s *Session) Calibrate(ctx context.Context) (Calibration, error) {
 	req, cancel, err := s.calibrationRequest(ctx, time.Now())
 	if err != nil {
@@ -34,6 +36,10 @@ func (s *Session) Calibrate(ctx context.Context) (Calibration, error) {
 	cancel()
 	if probe.Err != nil {
 		return Calibration{}, fmt.Errorf("calibration probe: %w", probe.Err)
+	}
+
+	if err := s.warmUp(ctx); err != nil {
+		return Calibration{}, err
 	}
 
 	var target Estimate
@@ -95,6 +101,32 @@ func (s *Session) sendCalibration(c *http.Client, req *http.Request) Attempt {
 		a.Err = errors.Join(a.Err, fmt.Errorf("calibration: cached response (Age=%s)", age))
 	}
 	return a
+}
+
+// warmUp sends one calibration request on every client concurrently so each
+// connection is established before any sample is taken. The responses are
+// discarded.
+func (s *Session) warmUp(ctx context.Context) error {
+	errs := make([]error, len(s.clients))
+	var wg sync.WaitGroup
+	for i, c := range s.clients {
+		wg.Go(func() {
+			req, cancel, err := s.calibrationRequest(ctx, time.Now())
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			defer cancel()
+			errs[i] = s.sendCalibration(c, req).Err
+		})
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			return fmt.Errorf("calibration warm-up %d: %w", i, err)
+		}
+	}
+	return nil
 }
 
 // calibratePrecise runs CalibrationRounds rounds in which every client sends
@@ -193,8 +225,8 @@ func sweepResult(samples []sweepSample, precision time.Duration) (Estimate, []ti
 
 // sweepPass sends one sample at each local instant in at. Requests are built
 // up front; each sample waits on its own goroutine for a release from a single
-// releaser, then sends on client i%Workers. base offsets sample indices in
-// error messages.
+// releaser, then sends on client (base+i)%Workers, so successive passes
+// continue round-robin. base also offsets sample indices in error messages.
 func (s *Session) sweepPass(ctx context.Context, at []time.Time, base int) ([]sweepSample, error) {
 	n := len(at)
 	reqs := make([]*http.Request, n)
@@ -213,7 +245,7 @@ func (s *Session) sweepPass(ctx context.Context, at []time.Time, base int) ([]sw
 	for i := range n {
 		ch := make(chan struct{})
 		rs[i] = release{at: at[i], ch: ch}
-		c := s.clients[i%len(s.clients)]
+		c := s.clients[(base+i)%len(s.clients)]
 		wg.Go(func() {
 			select {
 			case <-ch:

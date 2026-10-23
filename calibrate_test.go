@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -173,5 +176,54 @@ func TestCalibrateCachedResponse(t *testing.T) {
 	_, err := s.Calibrate(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "calibration: cached response (Age=5)") {
 		t.Fatalf("err = %v, want cached response (Age=5) error", err)
+	}
+}
+
+func TestCalibratePreciseWarmsEveryClient(t *testing.T) {
+	var count atomic.Int64
+	const workers, rounds = 4, 3
+	s := newCalibrateSession(t, fakeOpts{Precise: true, Count: &count},
+		Config{CalibrationServerTime: preciseExtract, Workers: workers, CalibrationRounds: rounds})
+	if _, err := s.Calibrate(context.Background()); err != nil {
+		t.Fatalf("Calibrate: %v", err)
+	}
+	// probe + one warm-up per client + the rounds
+	if got, want := count.Load(), int64(1+workers+workers*rounds); got != want {
+		t.Errorf("server saw %d requests, want %d", got, want)
+	}
+}
+
+func TestCalibrateSweepRoundRobin(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	onReq := func(r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, r.RemoteAddr)
+	}
+	const workers = 4
+	s := newCalibrateSession(t, fakeOpts{Skew: 300 * ms, OnRequest: onReq}, Config{Workers: workers})
+	if _, err := s.Calibrate(context.Background()); err != nil {
+		t.Fatalf("Calibrate: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	perConn := map[string]int{}
+	for _, a := range order {
+		perConn[a]++
+	}
+	if len(perConn) != workers {
+		t.Fatalf("requests used %d connections, want %d: %v", len(perConn), workers, perConn)
+	}
+	// Sweep samples per connection: drop the probe (first request) and one
+	// warm-up per client. Round-robin across both passes balances them to 1.
+	perConn[order[0]]--
+	lo, hi := math.MaxInt, 0
+	for a := range perConn {
+		perConn[a]--
+		lo, hi = min(lo, perConn[a]), max(hi, perConn[a])
+	}
+	if hi-lo > 1 {
+		t.Errorf("sweep samples per connection %v, want spread <= 1", perConn)
 	}
 }

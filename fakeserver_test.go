@@ -19,7 +19,8 @@ type fakeOpts struct {
 	// FixedDate, if non-nil, is sent as the Date header on every response
 	// (a stale or cached Date).
 	FixedDate *time.Time
-	Age       string // if non-empty, sent as the Age header
+	Age       string                // if non-empty, sent as the Age header
+	OnRequest func(r *http.Request) // if non-nil, called on arrival of each request
 }
 
 var preciseExtract = BodyLayout("2006-01-02 15:04:05.000000", time.UTC, time.Microsecond)
@@ -30,6 +31,9 @@ func newFakeServer(t *testing.T, o fakeOpts) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if o.Count != nil {
 			o.Count.Add(1)
+		}
+		if o.OnRequest != nil {
+			o.OnRequest(r)
 		}
 		if o.Delay > 0 {
 			time.Sleep(o.Delay)
