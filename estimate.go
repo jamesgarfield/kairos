@@ -1,6 +1,7 @@
 package kairos
 
 import (
+	"fmt"
 	"math"
 	"slices"
 	"time"
@@ -56,8 +57,11 @@ func keptSweepSamples(samples []sweepSample) []sweepSample {
 
 // sweepEstimate intersects the per-sample constraints on the stamp delay D.
 // Each stamp is truncated to precision, so a sample constrains D to
-// [Stamp-Sent, Stamp+precision-Sent).
-func sweepEstimate(samples []sweepSample, precision time.Duration) Estimate {
+// [Stamp-Sent, Stamp+precision-Sent). The intersection is widened on each
+// side by the sweep jitter J (half the q10..q90 RTT spread). If the
+// constraints still miss each other, that is max(lowers)-J > min(uppers)+J,
+// it returns ErrInconsistentSweep wrapped with the gap.
+func sweepEstimate(samples []sweepSample, precision time.Duration) (Estimate, error) {
 	var kept []time.Duration
 	var lo, hi time.Duration
 	n := 0
@@ -74,15 +78,18 @@ func sweepEstimate(samples []sweepSample, precision time.Duration) Estimate {
 		n++
 	}
 	if n == 0 {
-		return Estimate{Source: SourceSweep}
+		return Estimate{Source: SourceSweep}, nil
 	}
 	j := (quantile(kept, 0.9) - quantile(kept, 0.1)) / 2
+	if lo-j > hi+j {
+		return Estimate{}, fmt.Errorf("%w: max(lowers) %v exceeds min(uppers) %v by %v, more than twice the jitter %v",
+			ErrInconsistentSweep, lo, hi, lo-hi, j)
+	}
+	// A miss within the jitter (0 < lo-hi <= 2J) leaves lo-J <= hi+J, so the
+	// widened interval is always ordered.
 	lo -= j
 	hi += j
-	if lo > hi {
-		lo, hi = hi, lo
-	}
-	return Estimate{Source: SourceSweep, Point: lo + (hi-lo)/2, Lo: lo, Hi: hi}
+	return Estimate{Source: SourceSweep, Point: lo + (hi-lo)/2, Lo: lo, Hi: hi}, nil
 }
 
 // referenceEstimate converts a reference clock offset and its RTTs into an

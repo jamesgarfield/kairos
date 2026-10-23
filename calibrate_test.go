@@ -2,6 +2,7 @@ package kairos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -155,5 +156,22 @@ func TestCalibrateSweepShortRequestTimeout(t *testing.T) {
 	}
 	if cal.Target.Source != SourceSweep {
 		t.Errorf("Target.Source = %v, want SourceSweep", cal.Target.Source)
+	}
+}
+
+func TestCalibrateStaleDate(t *testing.T) {
+	old := time.Now().Add(-90 * time.Second)
+	s := newCalibrateSession(t, fakeOpts{FixedDate: &old}, Config{})
+	cal, err := s.Calibrate(context.Background())
+	if !errors.Is(err, ErrInconsistentSweep) {
+		t.Fatalf("err = %v (Final %+v), want ErrInconsistentSweep", err, cal.Final)
+	}
+}
+
+func TestCalibrateCachedResponse(t *testing.T) {
+	s := newCalibrateSession(t, fakeOpts{Age: "5"}, Config{})
+	_, err := s.Calibrate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "calibration: cached response (Age=5)") {
+		t.Fatalf("err = %v, want cached response (Age=5) error", err)
 	}
 }

@@ -1,6 +1,7 @@
 package kairos
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -54,15 +55,15 @@ func TestSweepEstimate(t *testing.T) {
 		samples = append(samples, sweepSample{Sent: sent, Stamp: sent.Add(d).Truncate(time.Second), RTT: 1 * ms})
 	}
 	want := Estimate{SourceSweep, 300 * ms, 299 * ms, 301 * ms}
-	if got := sweepEstimate(samples, time.Second); got != want {
-		t.Errorf("got %+v, want %+v", got, want)
+	if got, err := sweepEstimate(samples, time.Second); err != nil || got != want {
+		t.Errorf("err %v, got %+v, want %+v", err, got, want)
 	}
 
 	// Outlier with a wildly inconsistent stamp and a long RTT is dropped.
 	sent := base.Add(700 * ms)
 	samples = append(samples, sweepSample{Sent: sent, Stamp: sent.Add(5 * time.Second).Truncate(time.Second), RTT: 50 * ms})
-	if got := sweepEstimate(samples, time.Second); got != want {
-		t.Errorf("with outlier: got %+v, want %+v", got, want)
+	if got, err := sweepEstimate(samples, time.Second); err != nil || got != want {
+		t.Errorf("with outlier: err %v, got %+v, want %+v", err, got, want)
 	}
 }
 
@@ -104,5 +105,53 @@ func TestCombine(t *testing.T) {
 				t.Errorf("got %+v dis %v, want %+v dis %v", got, dis, tt.want, tt.wantDis)
 			}
 		})
+	}
+}
+
+// jitterSamples returns samples sent at base whose stamp delay constraints
+// are [l, l+1s) for each l in lowers, with RTTs 1ms and 3ms alternating so
+// that J = (q90-q10)/2 = 1ms.
+func jitterSamples(lowers ...time.Duration) []sweepSample {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var out []sweepSample
+	for i, l := range lowers {
+		rtt := 1 * ms
+		if i%2 == 1 {
+			rtt = 3 * ms
+		}
+		out = append(out, sweepSample{Sent: base, Stamp: base.Add(l), RTT: rtt})
+	}
+	return out
+}
+
+func TestSweepEstimateJitterWidens(t *testing.T) {
+	// Constraints [299ms, 1299ms) and [-699ms, 301ms) intersect in [299, 301]; J = 1ms.
+	got, err := sweepEstimate(jitterSamples(299*ms, -699*ms), time.Second)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	want := Estimate{SourceSweep, 300 * ms, 298 * ms, 302 * ms}
+	if got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestSweepEstimateInconsistentWithinJitter(t *testing.T) {
+	// max(lowers) = 301ms, min(uppers) = 300ms: a 1ms miss, within 2J = 2ms.
+	got, err := sweepEstimate(jitterSamples(301*ms, -700*ms), time.Second)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	want := Estimate{SourceSweep, 300500 * time.Microsecond, 300 * ms, 301 * ms}
+	if got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestSweepEstimateInconsistentBeyondJitter(t *testing.T) {
+	// max(lowers) = 305ms, min(uppers) = 300ms: a 5ms miss, beyond 2J = 2ms.
+	got, err := sweepEstimate(jitterSamples(305*ms, -700*ms), time.Second)
+	if !errors.Is(err, ErrInconsistentSweep) {
+		t.Fatalf("got %+v, err = %v, want ErrInconsistentSweep", got, err)
 	}
 }

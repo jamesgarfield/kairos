@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,7 +30,7 @@ func (s *Session) Calibrate(ctx context.Context) (Calibration, error) {
 	if err != nil {
 		return Calibration{}, fmt.Errorf("calibration probe: %w", err)
 	}
-	probe := s.send(s.clients[0], req, s.cfg.CalibrationServerTime)
+	probe := s.sendCalibration(s.clients[0], req)
 	cancel()
 	if probe.Err != nil {
 		return Calibration{}, fmt.Errorf("calibration probe: %w", probe.Err)
@@ -81,6 +83,20 @@ func (s *Session) calibrationRequest(ctx context.Context, sendAt time.Time) (*ht
 	return req, cancel, nil
 }
 
+// sendCalibration sends a calibration request on c. A response with a non-zero
+// Age header came from a cache, so it is not a live clock reading and is an
+// error.
+func (s *Session) sendCalibration(c *http.Client, req *http.Request) Attempt {
+	a := s.send(c, req, s.cfg.CalibrationServerTime)
+	if age := strings.TrimSpace(a.Header.Get("Age")); age != "" {
+		if n, err := strconv.Atoi(age); err == nil && n == 0 {
+			return a
+		}
+		a.Err = errors.Join(a.Err, fmt.Errorf("calibration: cached response (Age=%s)", age))
+	}
+	return a
+}
+
 // calibratePrecise runs CalibrationRounds rounds in which every client sends
 // at once, and returns the precise estimate and all RTTs.
 func (s *Session) calibratePrecise(ctx context.Context) (Estimate, []time.Duration, error) {
@@ -96,7 +112,7 @@ func (s *Session) calibratePrecise(ctx context.Context) (Estimate, []time.Durati
 					return
 				}
 				defer cancel()
-				atts[i] = s.send(c, req, s.cfg.CalibrationServerTime)
+				atts[i] = s.sendCalibration(c, req)
 			})
 		}
 		wg.Wait()
@@ -168,7 +184,11 @@ func sweepResult(samples []sweepSample, precision time.Duration) (Estimate, []ti
 	for i, sm := range kept {
 		rtts[i] = sm.RTT
 	}
-	return sweepEstimate(samples, precision), rtts, nil
+	e, err := sweepEstimate(samples, precision)
+	if err != nil {
+		return Estimate{}, nil, fmt.Errorf("calibration sweep: %w", err)
+	}
+	return e, rtts, nil
 }
 
 // sweepPass sends one sample at each local instant in at. Requests are built
@@ -201,7 +221,7 @@ func (s *Session) sweepPass(ctx context.Context, at []time.Time, base int) ([]sw
 				atts[i].Err = ctx.Err()
 				return
 			}
-			atts[i] = s.send(c, reqs[i], s.cfg.CalibrationServerTime)
+			atts[i] = s.sendCalibration(c, reqs[i])
 		})
 	}
 	runReleases(ctx, rs, s.cfg.Spin, 0)

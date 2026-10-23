@@ -91,6 +91,8 @@ type Result struct {
 }
 
 var (
-	ErrNoHit   = errors.New("kairos: no hit")
-	ErrTooLate = errors.New("kairos: target too soon")
+	ErrNoHit             = errors.New("kairos: no hit")
+	ErrTooLate           = errors.New("kairos: target too soon")
+	ErrInconsistentSweep = errors.New("kairos: inconsistent Date sweep: the samples' constraints do not intersect; " +
+		"likely a cached or stale Date, or several backends with different clocks")
 )
