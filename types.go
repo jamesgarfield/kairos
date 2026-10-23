@@ -1,4 +1,3 @@
-// Package kairos lands HTTP requests just after a target time on a server's clock.
 package kairos
 
 import (
