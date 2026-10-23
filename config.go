@@ -115,5 +115,31 @@ func (c Config) validate() error {
 	if c.GiveUp < 0 {
 		return fmt.Errorf("kairos: invalid config: GiveUp must not be negative (got %v)", c.GiveUp)
 	}
+	for _, d := range []struct {
+		name string
+		v    time.Duration
+	}{
+		{"Spin", c.Spin},
+		{"RewarmBefore", c.RewarmBefore},
+		{"CalibrateBefore", c.CalibrateBefore},
+		{"InFlightGrace", c.InFlightGrace},
+		{"RequestTimeout", c.RequestTimeout},
+		{"SweepStep", c.SweepStep},
+	} {
+		if d.v < 0 {
+			return fmt.Errorf("kairos: invalid config: %s must not be negative (got %v)", d.name, d.v)
+		}
+	}
+	if c.MaxBodyBytes < 0 {
+		return fmt.Errorf("kairos: invalid config: MaxBodyBytes must not be negative (got %d)", c.MaxBodyBytes)
+	}
+	if c.CalibrationRounds < 1 {
+		return fmt.Errorf("kairos: invalid config: CalibrationRounds must be at least 1 (got %d)", c.CalibrationRounds)
+	}
+	switch c.Policy {
+	case PolicyInterval, PolicyReferenceWins, PolicyTargetWins:
+	default:
+		return fmt.Errorf("kairos: invalid config: unknown Policy %d", c.Policy)
+	}
 	return nil
 }

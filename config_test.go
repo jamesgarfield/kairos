@@ -72,6 +72,16 @@ func TestValidate(t *testing.T) {
 		{"negative spacing", Config{Target: t0, Request: testRequest, Spacing: -1}, "Spacing"},
 		{"negative lead", Config{Target: t0, Request: testRequest, Lead: -1}, "Lead"},
 		{"negative giveup", Config{Target: t0, Request: testRequest, GiveUp: -1}, "GiveUp"},
+		{"negative spin", Config{Target: t0, Request: testRequest, Spin: -1}, "Spin"},
+		{"negative rewarm", Config{Target: t0, Request: testRequest, RewarmBefore: -1}, "RewarmBefore"},
+		{"negative calibrate before", Config{Target: t0, Request: testRequest, CalibrateBefore: -1}, "CalibrateBefore"},
+		{"negative grace", Config{Target: t0, Request: testRequest, InFlightGrace: -1}, "InFlightGrace"},
+		{"negative request timeout", Config{Target: t0, Request: testRequest, RequestTimeout: -1}, "RequestTimeout"},
+		{"negative sweep step", Config{Target: t0, Request: testRequest, SweepStep: -1}, "SweepStep"},
+		{"negative max body", Config{Target: t0, Request: testRequest, MaxBodyBytes: -1}, "MaxBodyBytes"},
+		{"negative rounds", Config{Target: t0, Request: testRequest, CalibrationRounds: -1}, "CalibrationRounds"},
+		{"unknown policy", Config{Target: t0, Request: testRequest, Policy: Policy(99)}, "Policy"},
+		{"policy target wins", Config{Target: t0, Request: testRequest, Policy: PolicyTargetWins}, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
