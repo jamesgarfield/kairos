@@ -22,10 +22,10 @@ func (SystemClock) Offset(context.Context) (time.Duration, error) { return 0, ni
 
 // HTTPReference derives the offset from the time reported by an HTTP endpoint.
 type HTTPReference struct {
-	URL     string
-	Extract TimeExtractor
-	Samples int          // 0 = 5
-	Client  *http.Client // nil = &http.Client{}
+	URL     string        // fetched with GET; a non-2xx status is an error
+	Extract TimeExtractor // required; its precision must be 10ms or finer
+	Samples int           // 0 = 5
+	Client  *http.Client  // nil = &http.Client{}
 }
 
 // ErrCoarseReference is returned when the reference's time precision is too coarse.

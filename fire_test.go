@@ -243,3 +243,9 @@ func TestFireNilRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestErrTooLateMessage(t *testing.T) {
+	if got, want := ErrTooLate.Error(), "kairos: target too soon to fire"; got != want {
+		t.Errorf("ErrTooLate = %q, want %q", got, want)
+	}
+}

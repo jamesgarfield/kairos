@@ -7,10 +7,11 @@ import (
 	"time"
 )
 
-// RequestFunc builds a fresh request bound to ctx.
+// RequestFunc builds a fresh request bound to ctx. It must not return a nil
+// request with a nil error.
 type RequestFunc func(ctx context.Context) (*http.Request, error)
 
-// Logger receives diagnostic output.
+// Logger receives diagnostic output. It must be safe for concurrent use.
 type Logger interface {
 	Logf(format string, args ...any)
 }
@@ -41,35 +42,51 @@ func (a Attempt) RTT() time.Duration { return a.Received.Sub(a.Sent) }
 type Source int
 
 const (
+	// SourcePrecise: the median of precise server stamps minus send times.
 	SourcePrecise Source = iota + 1
+	// SourceSweep: a Date-header sweep that locates the instant the coarse
+	// stamp ticks over.
 	SourceSweep
+	// SourceReference: a ReferenceClock offset plus half the RTT.
 	SourceReference
 )
 
-// Estimate is a clock offset estimate; stampDelay = server - local at send.
+// Estimate is an estimate of the stamp delay: the server clock minus the
+// local send time, i.e. clock offset plus one-way latency.
 type Estimate struct {
-	Source        Source
-	Point, Lo, Hi time.Duration
+	Source Source
+	Point  time.Duration // best estimate
+	Lo, Hi time.Duration // plausible interval, Lo <= Point <= Hi
 }
 
-// Policy decides how target and reference estimates are reconciled.
+// Policy decides how the target and reference estimates are reconciled. It
+// matters only when a ReferenceClock is configured.
 type Policy int
 
 const (
+	// PolicyInterval (the default) uses the reference point when it lies in
+	// the target interval, narrowing the interval to their intersection, and
+	// otherwise clamps it to the nearest edge and records the Disagreement.
 	PolicyInterval Policy = iota
+	// PolicyReferenceWins uses the reference estimate; the target estimate
+	// only yields a logged Disagreement. For a Date served by an edge whose
+	// clock differs from the app's.
 	PolicyReferenceWins
+	// PolicyTargetWins uses the target estimate and ignores the reference
+	// beyond recording the Disagreement.
 	PolicyTargetWins
 )
 
-// Calibration is the result of clock calibration.
+// Calibration is the result of clock calibration. All durations are stamp
+// delays (see Estimate) except RTT and WakeLatency.
 type Calibration struct {
-	TakenAt      time.Time
-	Target       Estimate  // SourcePrecise or SourceSweep
-	Reference    *Estimate // nil if no ReferenceClock
-	Final        Estimate
+	TakenAt      time.Time     // local time calibration finished; Result.CalibrationAge is measured from it
+	Target       Estimate      // SourcePrecise or SourceSweep
+	Reference    *Estimate     // nil if no ReferenceClock
+	Final        Estimate      // the reconciled estimate (see Policy) that Fire schedules from
 	Disagreement time.Duration // Reference.Point - clamp(Reference.Point, Target.Lo, Target.Hi); 0 if no reference
 	RTT          time.Duration // median RTT against the calibration endpoint
-	WakeLatency  time.Duration
+	WakeLatency  time.Duration // median release-to-wake delay; releases are moved this much earlier
 }
 
 // Schedule is the planned local send timing.
@@ -91,8 +108,17 @@ type Result struct {
 }
 
 var (
-	ErrNoHit             = errors.New("kairos: no hit")
-	ErrTooLate           = errors.New("kairos: target too soon")
+	// ErrNoHit is returned by Fire and Run, with the full Result, when no
+	// attempt was a hit before the deadline.
+	ErrNoHit = errors.New("kairos: no hit")
+
+	// ErrTooLate is returned, wrapped, by Fire and Run when the first
+	// worker's fire time has already passed. Nothing is sent.
+	ErrTooLate = errors.New("kairos: target too soon to fire")
+
+	// ErrInconsistentSweep is returned, wrapped with the gap, by Calibrate
+	// and Run when the samples of a Date sweep cannot all be right: their
+	// constraints miss each other by more than the measured jitter.
 	ErrInconsistentSweep = errors.New("kairos: inconsistent Date sweep: the samples' constraints do not intersect; " +
 		"likely a cached or stale Date, or several backends with different clocks")
 )
