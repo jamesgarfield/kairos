@@ -36,6 +36,9 @@ var referenceTimeout = 5 * time.Second
 
 // Offset returns median(ref.Time - (sent + rtt/2)) over the samples.
 func (h HTTPReference) Offset(ctx context.Context) (time.Duration, error) {
+	if h.Extract == nil {
+		return 0, errors.New("kairos: HTTPReference.Extract is nil")
+	}
 	n := h.Samples
 	if n <= 0 {
 		n = 5

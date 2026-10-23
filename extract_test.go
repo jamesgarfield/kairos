@@ -55,3 +55,14 @@ func TestBodyLayout(t *testing.T) {
 		t.Errorf("bad body err = %v, want error quoting body", err)
 	}
 }
+
+func TestBodyLayoutNilLocation(t *testing.T) {
+	ex := BodyLayout("2006-01-02 15:04:05", nil, time.Second)
+	st, err := ex(&http.Response{}, []byte("2026-10-23 13:00:00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 10, 23, 13, 0, 0, 0, time.UTC); !st.Time.Equal(want) || st.Time.Location() != time.UTC {
+		t.Errorf("Time = %v, want %v in UTC", st.Time, want)
+	}
+}

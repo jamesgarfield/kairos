@@ -54,3 +54,11 @@ func TestHTTPReferenceTimeoutPerSample(t *testing.T) {
 		t.Fatalf("per-sample timeout should not span samples: %v", err)
 	}
 }
+
+func TestHTTPReferenceNilExtract(t *testing.T) {
+	srv := newFakeServer(t, fakeOpts{Precise: true})
+	_, err := HTTPReference{URL: srv.URL}.Offset(context.Background())
+	if err == nil || err.Error() != "kairos: HTTPReference.Extract is nil" {
+		t.Fatalf("err = %v, want kairos: HTTPReference.Extract is nil", err)
+	}
+}

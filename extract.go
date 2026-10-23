@@ -26,8 +26,11 @@ func DateHeader(resp *http.Response, body []byte) (ServerTime, error) {
 
 // BodyLayout returns a TimeExtractor that parses the whitespace-trimmed
 // response body as a time in the given layout and location, reporting the
-// given precision.
+// given precision. A nil loc means time.UTC.
 func BodyLayout(layout string, loc *time.Location, precision time.Duration) TimeExtractor {
+	if loc == nil {
+		loc = time.UTC
+	}
 	return func(resp *http.Response, body []byte) (ServerTime, error) {
 		s := strings.TrimSpace(string(body))
 		t, err := time.ParseInLocation(layout, s, loc)
