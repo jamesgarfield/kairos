@@ -3,6 +3,7 @@ package kairos
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -14,6 +15,7 @@ type fakeOpts struct {
 	NoDate  bool                          // omit Date header
 	Status  func(serverNow time.Time) int // nil = 200
 	Delay   time.Duration                 // sleep before stamping
+	Count   *atomic.Int64                 // if non-nil, incremented per request
 }
 
 var preciseExtract = BodyLayout("2006-01-02 15:04:05.000000", time.UTC, time.Microsecond)
@@ -22,6 +24,9 @@ var preciseExtract = BodyLayout("2006-01-02 15:04:05.000000", time.UTC, time.Mic
 func newFakeServer(t *testing.T, o fakeOpts) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o.Count != nil {
+			o.Count.Add(1)
+		}
 		if o.Delay > 0 {
 			time.Sleep(o.Delay)
 		}
