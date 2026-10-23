@@ -62,7 +62,7 @@ func (s *Session) Fire(ctx context.Context, cal Calibration) (Result, error) {
 	wg.Go(func() { runReleases(sendCtx, rs, cfg.Spin, cal.WakeLatency) })
 	for w := range cfg.Workers {
 		wg.Go(func() {
-			res.Attempts[w] = s.runWorker(ctx, sendCtx, reqCtx, cancelSend, w, sched.FireAt[w], sched.Deadline, chans[w], isHit, cal.Final.Point)
+			res.Attempts[w] = s.runWorker(sendCtx, reqCtx, cancelSend, w, sched.FireAt[w], sched.Deadline, chans[w], isHit, cal.Final.Point)
 		})
 	}
 	wg.Wait()
@@ -91,7 +91,7 @@ func (s *Session) Fire(ctx context.Context, cal Calibration) (Result, error) {
 // runWorker rewarms worker w's connection, waits for its release, then sends
 // and retries immediately until a hit, the deadline, or sendCtx cancellation.
 // Nothing is logged between release and the end of the send loop.
-func (s *Session) runWorker(ctx, sendCtx, reqCtx context.Context, cancelSend context.CancelFunc,
+func (s *Session) runWorker(sendCtx, reqCtx context.Context, cancelSend context.CancelFunc,
 	w int, fireAt, deadline time.Time, release <-chan struct{}, isHit func(Attempt) bool, stampDelay time.Duration,
 ) []Attempt {
 	cfg := s.cfg
@@ -101,7 +101,7 @@ func (s *Session) runWorker(ctx, sendCtx, reqCtx context.Context, cancelSend con
 	if err := sleepUntil(sendCtx, fireAt.Add(-cfg.RewarmBefore), 0); err != nil {
 		return attempts
 	}
-	if err := s.rewarm(ctx, c); err != nil {
+	if err := s.rewarm(reqCtx, c); err != nil {
 		cfg.Logger.Logf("kairos: worker %d rewarm: %v", w, err)
 	}
 	req, buildErr := cfg.Request(reqCtx)
@@ -138,6 +138,8 @@ func (s *Session) runWorker(ctx, sendCtx, reqCtx context.Context, cancelSend con
 }
 
 // rewarm sends one real request on c so its connection is warm at release.
+// ctx should be the fire-phase request context, so a slow rewarm is cancelled
+// at Deadline+InFlightGrace like any other in-flight request.
 func (s *Session) rewarm(ctx context.Context, c *http.Client) error {
 	rctx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
 	defer cancel()

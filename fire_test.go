@@ -191,3 +191,22 @@ func TestFireInFlightAtDeadline(t *testing.T) {
 	}
 	checkNoSendAtOrAfterDeadline(t, res)
 }
+
+func TestFireSlowRewarmBoundedByGrace(t *testing.T) {
+	// Calibrate against a fast server; fire (and so rewarm) against one whose
+	// Delay far exceeds GiveUp+InFlightGrace.
+	fast := newFakeServer(t, fakeOpts{Skew: 200 * ms, Precise: true})
+	target := time.Now().Add(200*ms + 1500*ms)
+	const grace = 50 * ms
+	s, cal := calibrated(t, fakeOpts{Skew: 200 * ms, Precise: true, Delay: 2 * time.Second},
+		Config{Target: target, Calibration: reqFor(fast.URL), ServerTime: preciseExtract,
+			CalibrationServerTime: preciseExtract, GiveUp: 50 * ms, InFlightGrace: grace})
+	res, err := s.Fire(context.Background(), cal)
+	returned := time.Now()
+	if !errors.Is(err, ErrNoHit) {
+		t.Fatalf("err = %v, want ErrNoHit", err)
+	}
+	if limit := res.Schedule.Deadline.Add(grace + 100*ms); returned.After(limit) {
+		t.Errorf("Fire returned %v after Deadline, want <= grace+100ms (%v)", returned.Sub(res.Schedule.Deadline), grace+100*ms)
+	}
+}
