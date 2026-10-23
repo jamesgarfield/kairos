@@ -2,6 +2,7 @@ package kairos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -104,7 +105,7 @@ func (s *Session) runWorker(sendCtx, reqCtx context.Context, cancelSend context.
 	if err := s.rewarm(reqCtx, c); err != nil {
 		cfg.Logger.Logf("kairos: worker %d rewarm: %v", w, err)
 	}
-	req, buildErr := cfg.Request(reqCtx)
+	req, buildErr := s.buildRequest(reqCtx)
 
 	select {
 	case <-release:
@@ -118,7 +119,7 @@ func (s *Session) runWorker(sendCtx, reqCtx context.Context, cancelSend context.
 		}
 		if buildErr != nil {
 			// Never sent; a build error is not retried, so the loop cannot spin on it.
-			attempts = append(attempts, Attempt{Worker: w, N: n, Err: fmt.Errorf("build request: %w", buildErr)})
+			attempts = append(attempts, Attempt{Worker: w, N: n, Err: buildErr})
 			break
 		}
 		a := s.send(c, req, cfg.ServerTime)
@@ -132,7 +133,7 @@ func (s *Session) runWorker(sendCtx, reqCtx context.Context, cancelSend context.
 			}
 			break
 		}
-		req, buildErr = cfg.Request(reqCtx)
+		req, buildErr = s.buildRequest(reqCtx)
 	}
 	return attempts
 }
@@ -143,9 +144,21 @@ func (s *Session) runWorker(sendCtx, reqCtx context.Context, cancelSend context.
 func (s *Session) rewarm(ctx context.Context, c *http.Client) error {
 	rctx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
 	defer cancel()
-	req, err := s.cfg.Request(rctx)
+	req, err := s.buildRequest(rctx)
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return err
 	}
 	return s.send(c, req, s.cfg.ServerTime).Err
+}
+
+// buildRequest calls Request, treating a nil request as a build error.
+func (s *Session) buildRequest(ctx context.Context) (*http.Request, error) {
+	req, err := s.cfg.Request(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	if req == nil {
+		return nil, errors.New("build request: Request returned nil request")
+	}
+	return req, nil
 }

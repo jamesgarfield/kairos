@@ -3,6 +3,8 @@ package kairos
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -208,5 +210,36 @@ func TestFireSlowRewarmBoundedByGrace(t *testing.T) {
 	}
 	if limit := res.Schedule.Deadline.Add(grace + 100*ms); returned.After(limit) {
 		t.Errorf("Fire returned %v after Deadline, want <= grace+100ms (%v)", returned.Sub(res.Schedule.Deadline), grace+100*ms)
+	}
+}
+
+func TestFireNilRequest(t *testing.T) {
+	srv := newFakeServer(t, fakeOpts{Skew: 200 * ms, Precise: true})
+	target := time.Now().Add(200*ms + 1500*ms)
+	s, err := New(Config{
+		Target:                target,
+		Request:               func(context.Context) (*http.Request, error) { return nil, nil },
+		Calibration:           reqFor(srv.URL),
+		ServerTime:            preciseExtract,
+		CalibrationServerTime: preciseExtract,
+		CalibrationRounds:     3,
+		GiveUp:                100 * ms,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(s.Close)
+	cal, err := s.Calibrate(context.Background())
+	if err != nil {
+		t.Fatalf("Calibrate: %v", err)
+	}
+	res, err := s.Fire(context.Background(), cal)
+	if !errors.Is(err, ErrNoHit) {
+		t.Fatalf("err = %v, want ErrNoHit", err)
+	}
+	for w, as := range res.Attempts {
+		if len(as) != 1 || as[0].Err == nil || !strings.Contains(as[0].Err.Error(), "nil request") {
+			t.Errorf("worker %d attempts = %+v, want one attempt with a nil request error", w, as)
+		}
 	}
 }
