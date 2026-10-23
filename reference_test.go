@@ -42,3 +42,15 @@ func TestHTTPReferenceStatusError(t *testing.T) {
 		t.Fatal("want error for 500")
 	}
 }
+
+func TestHTTPReferenceTimeoutPerSample(t *testing.T) {
+	old := referenceTimeout
+	referenceTimeout = 100 * ms
+	t.Cleanup(func() { referenceTimeout = old })
+	// each sample (~40ms) is under the timeout; the total (~320ms) exceeds it
+	srv := newFakeServer(t, fakeOpts{Precise: true, Delay: 40 * ms})
+	ref := HTTPReference{URL: srv.URL, Extract: preciseExtract, Samples: 8}
+	if _, err := ref.Offset(context.Background()); err != nil {
+		t.Fatalf("per-sample timeout should not span samples: %v", err)
+	}
+}

@@ -31,7 +31,8 @@ type HTTPReference struct {
 // ErrCoarseReference is returned when the reference's time precision is too coarse.
 var ErrCoarseReference = errors.New("kairos: reference clock precision too coarse")
 
-const defaultReferenceTimeout = 5 * time.Second
+// referenceTimeout is the per-request timeout applied when ctx has no deadline.
+var referenceTimeout = 5 * time.Second
 
 // Offset returns median(ref.Time - (sent + rtt/2)) over the samples.
 func (h HTTPReference) Offset(ctx context.Context) (time.Duration, error) {
@@ -42,11 +43,6 @@ func (h HTTPReference) Offset(ctx context.Context) (time.Duration, error) {
 	client := h.Client
 	if client == nil {
 		client = &http.Client{}
-	}
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, defaultReferenceTimeout)
-		defer cancel()
 	}
 	offs := make([]time.Duration, 0, n)
 	for i := range n {
@@ -60,6 +56,11 @@ func (h HTTPReference) Offset(ctx context.Context) (time.Duration, error) {
 }
 
 func (h HTTPReference) sample(ctx context.Context, client *http.Client) (time.Duration, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, referenceTimeout)
+		defer cancel()
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.URL, nil)
 	if err != nil {
 		return 0, err
@@ -71,12 +72,12 @@ func (h HTTPReference) sample(ctx context.Context, client *http.Client) (time.Du
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	received := time.Now()
-	if cerr := resp.Body.Close(); cerr != nil {
-		// close errors are non-fatal for a fully read body
-		_ = cerr
-	}
+	cerr := resp.Body.Close()
 	if err != nil {
 		return 0, err
+	}
+	if cerr != nil {
+		return 0, fmt.Errorf("close body: %w", cerr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return 0, fmt.Errorf("status %d", resp.StatusCode)
