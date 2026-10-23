@@ -43,16 +43,34 @@ type release struct {
 
 // runReleases sorts rs by at, then for each waits until at-wake and closes
 // its channel. All sleeping and spinning happens on the caller's goroutine, so
-// at most one goroutine spins. It returns on ctx cancellation without closing
-// the remaining channels.
+// at most one goroutine spins. Each release spins for releaseSpin of spin, so
+// closely spaced releases leave the scheduler room to run the goroutines they
+// release. It returns on ctx cancellation without closing the remaining
+// channels.
 func runReleases(ctx context.Context, rs []release, spin, wake time.Duration) {
 	sort.SliceStable(rs, func(i, j int) bool { return rs[i].at.Before(rs[j].at) })
-	for _, r := range rs {
-		if err := sleepUntil(ctx, r.at.Add(-wake), spin); err != nil {
+	for i, r := range rs {
+		var gap time.Duration
+		if i > 0 {
+			gap = r.at.Sub(rs[i-1].at)
+		}
+		if err := sleepUntil(ctx, r.at.Add(-wake), releaseSpin(spin, gap, i == 0)); err != nil {
 			return
 		}
 		close(r.ch)
 	}
+}
+
+// releaseSpin is the spin window for one release: min(spin, gap/2), where gap
+// is the time since the previous release; the first release uses the full
+// spin. Capping at gap/2 means the releaser sleeps on a timer for at least
+// half of every gap, so even with a single P the netpoller and the released
+// goroutines get to run between releases.
+func releaseSpin(spin, gap time.Duration, first bool) time.Duration {
+	if first {
+		return spin
+	}
+	return min(spin, gap/2)
 }
 
 // measureWakeLatency returns the median delay between closing a channel and a

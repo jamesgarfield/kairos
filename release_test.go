@@ -72,3 +72,24 @@ func TestSleepUntilCancelled(t *testing.T) {
 		t.Error("want ctx error")
 	}
 }
+
+func TestReleaseSpin(t *testing.T) {
+	tests := []struct {
+		name      string
+		spin, gap time.Duration
+		first     bool
+		want      int
+	}{
+		{"first uses full spin", 2 * ms, 0, true, 2},
+		{"wide gap keeps spin", 2 * ms, 10 * ms, false, 2},
+		{"narrow gap halves", 2 * ms, 2 * ms, false, 1},
+		{"zero gap no spin", 2 * ms, 0, false, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := releaseSpin(tt.spin, tt.gap, tt.first); got != time.Duration(tt.want)*ms {
+				t.Errorf("releaseSpin = %v, want %v", got, time.Duration(tt.want)*ms)
+			}
+		})
+	}
+}
