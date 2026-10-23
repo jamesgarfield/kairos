@@ -146,3 +146,14 @@ func TestCalibrateStatusIgnored(t *testing.T) {
 		t.Fatalf("Calibrate: %v", err)
 	}
 }
+
+func TestCalibrateSweepShortRequestTimeout(t *testing.T) {
+	s := newCalibrateSession(t, fakeOpts{Skew: 300 * ms}, Config{RequestTimeout: 500 * ms})
+	cal, err := s.Calibrate(context.Background())
+	if err != nil {
+		t.Fatalf("Calibrate: %v", err)
+	}
+	if cal.Target.Source != SourceSweep {
+		t.Errorf("Target.Source = %v, want SourceSweep", cal.Target.Source)
+	}
+}

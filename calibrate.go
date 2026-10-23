@@ -24,7 +24,7 @@ const sweepMaxHalf = 25
 // including one-way latency) against the calibration endpoint, optionally
 // combines it with the reference clock, and warms every worker connection.
 func (s *Session) Calibrate(ctx context.Context) (Calibration, error) {
-	req, cancel, err := s.calibrationRequest(ctx)
+	req, cancel, err := s.calibrationRequest(ctx, time.Now())
 	if err != nil {
 		return Calibration{}, fmt.Errorf("calibration probe: %w", err)
 	}
@@ -64,10 +64,11 @@ func (s *Session) Calibrate(ctx context.Context) (Calibration, error) {
 	return cal, nil
 }
 
-// calibrationRequest builds a calibration request bounded by RequestTimeout.
-// The caller must call the returned cancel func once the request is done.
-func (s *Session) calibrationRequest(ctx context.Context) (*http.Request, context.CancelFunc, error) {
-	rctx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
+// calibrationRequest builds a calibration request that expires RequestTimeout
+// after sendAt, the instant it will be sent. The caller must call the returned
+// cancel func once the request is done.
+func (s *Session) calibrationRequest(ctx context.Context, sendAt time.Time) (*http.Request, context.CancelFunc, error) {
+	rctx, cancel := context.WithDeadline(ctx, sendAt.Add(s.cfg.RequestTimeout))
 	req, err := s.cfg.Calibration(rctx)
 	if err != nil {
 		cancel()
@@ -89,7 +90,7 @@ func (s *Session) calibratePrecise(ctx context.Context) (Estimate, []time.Durati
 		var wg sync.WaitGroup
 		for i, c := range s.clients {
 			wg.Go(func() {
-				req, cancel, err := s.calibrationRequest(ctx)
+				req, cancel, err := s.calibrationRequest(ctx, time.Now())
 				if err != nil {
 					atts[i].Err = err
 					return
@@ -156,24 +157,18 @@ func (s *Session) calibrateSweep(ctx context.Context, precision time.Duration) (
 	return sweepResult(append(coarse, fine...), precision)
 }
 
-// sweepResult returns sweepEstimate(samples) and the RTTs that survive the
-// same 2x-median filter sweepEstimate applies. It errors if none survive.
+// sweepResult returns sweepEstimate(samples) and the RTTs of the samples it
+// keeps (keptSweepSamples). It errors if none are kept.
 func sweepResult(samples []sweepSample, precision time.Duration) (Estimate, []time.Duration, error) {
-	all := make([]time.Duration, len(samples))
-	for i, sm := range samples {
-		all[i] = sm.RTT
-	}
-	cutoff := 2 * quantile(all, 0.5)
-	var kept []time.Duration
-	for _, r := range all {
-		if r <= cutoff {
-			kept = append(kept, r)
-		}
-	}
+	kept := keptSweepSamples(samples)
 	if len(kept) == 0 {
 		return Estimate{}, nil, errors.New("calibration: no usable sweep samples")
 	}
-	return sweepEstimate(samples, precision), kept, nil
+	rtts := make([]time.Duration, len(kept))
+	for i, sm := range kept {
+		rtts[i] = sm.RTT
+	}
+	return sweepEstimate(samples, precision), rtts, nil
 }
 
 // sweepPass sends one sample at each local instant in at. Requests are built
@@ -184,7 +179,7 @@ func (s *Session) sweepPass(ctx context.Context, at []time.Time, base int) ([]sw
 	n := len(at)
 	reqs := make([]*http.Request, n)
 	for i := range n {
-		req, cancel, err := s.calibrationRequest(ctx)
+		req, cancel, err := s.calibrationRequest(ctx, at[i])
 		if err != nil {
 			return nil, fmt.Errorf("calibration sweep sample %d: %w", base+i, err)
 		}

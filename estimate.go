@@ -38,23 +38,30 @@ func preciseEstimate(delays []time.Duration) Estimate {
 	}
 }
 
-// sweepEstimate intersects the per-sample constraints on the stamp delay D.
-// Each stamp is truncated to precision, so a sample constrains D to
-// [Stamp-Sent, Stamp+precision-Sent).
-func sweepEstimate(samples []sweepSample, precision time.Duration) Estimate {
+// keptSweepSamples drops samples whose RTT exceeds twice the median RTT.
+func keptSweepSamples(samples []sweepSample) []sweepSample {
 	rtts := make([]time.Duration, len(samples))
 	for i, s := range samples {
 		rtts[i] = s.RTT
 	}
 	cutoff := 2 * quantile(rtts, 0.5)
+	var kept []sweepSample
+	for _, s := range samples {
+		if s.RTT <= cutoff {
+			kept = append(kept, s)
+		}
+	}
+	return kept
+}
 
+// sweepEstimate intersects the per-sample constraints on the stamp delay D.
+// Each stamp is truncated to precision, so a sample constrains D to
+// [Stamp-Sent, Stamp+precision-Sent).
+func sweepEstimate(samples []sweepSample, precision time.Duration) Estimate {
 	var kept []time.Duration
 	var lo, hi time.Duration
 	n := 0
-	for _, s := range samples {
-		if s.RTT > cutoff {
-			continue
-		}
+	for _, s := range keptSweepSamples(samples) {
 		kept = append(kept, s.RTT)
 		l := s.Stamp.Sub(s.Sent)
 		u := l + precision
