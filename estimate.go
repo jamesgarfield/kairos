@@ -1,7 +1,6 @@
 package kairos
 
 import (
-	"fmt"
 	"math"
 	"slices"
 	"time"
@@ -91,8 +90,8 @@ func sweepRelaxation(rtt, median time.Duration) time.Duration {
 //
 // The intersection is widened on each side by the sweep jitter J, half the
 // q10..q90 RTT spread of keptSweepSamples. If the constraints still miss each
-// other, that is max(lowers)-J > min(uppers)+J, it returns ErrInconsistentSweep
-// wrapped with the gap.
+// other, that is max(lowers)-J > min(uppers)+J, it returns an
+// *InconsistentSweepError.
 func sweepEstimate(samples []sweepSample, precision time.Duration) (Estimate, error) {
 	if len(samples) == 0 {
 		return Estimate{Source: SourceSweep}, nil
@@ -118,14 +117,31 @@ func sweepEstimate(samples []sweepSample, precision time.Duration) (Estimate, er
 	}
 	j := (quantile(rtts, 0.9) - quantile(rtts, 0.1)) / 2
 	if lo-j > hi+j {
-		return Estimate{}, fmt.Errorf("%w: max(lowers) %v exceeds min(uppers) %v by %v, more than twice the jitter %v",
-			ErrInconsistentSweep, lo, hi, lo-hi, j)
+		return Estimate{}, inconsistentSweep(samples, med, j, lo, loAt, hi, hiAt)
 	}
 	// A miss within the jitter (0 < lo-hi <= 2J) leaves lo-J <= hi+J, so the
 	// widened interval is always ordered.
 	lo -= j
 	hi += j
 	return Estimate{Source: SourceSweep, Point: lo + (hi-lo)/2, Lo: lo, Hi: hi}, nil
+}
+
+// inconsistentSweep builds the *InconsistentSweepError for a failed
+// sweepEstimate.
+func inconsistentSweep(samples []sweepSample, med, j, lo time.Duration, loAt int, hi time.Duration, hiAt int) error {
+	out := make([]SweepSample, len(samples))
+	for i, s := range samples {
+		out[i] = SweepSample{Sent: s.Sent, Stamp: s.Stamp, RTT: s.RTT, Relaxation: sweepRelaxation(s.RTT, med)}
+	}
+	return &InconsistentSweepError{
+		Samples:        out,
+		MedianRTT:      med,
+		Jitter:         j,
+		MaxLower:       lo,
+		MaxLowerSample: loAt,
+		MinUpper:       hi,
+		MinUpperSample: hiAt,
+	}
 }
 
 // referenceEstimate converts a reference clock offset and its RTTs into an

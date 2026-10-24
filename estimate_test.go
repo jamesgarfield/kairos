@@ -230,9 +230,14 @@ func TestSweepDelayedSampleFasterReturn(t *testing.T) {
 	}
 
 	// 7ms faster: relaxation 21ms, relaxed lower 77ms, 7ms beyond min(uppers).
-	got, err = sweepEstimate(tickSweep(map[int]sweepMod{10: {delay: 30 * ms, fasterReturn: 7 * ms}}, 0), time.Second)
-	if !errors.Is(err, ErrInconsistentSweep) {
-		t.Fatalf("got %+v, err = %v, want ErrInconsistentSweep", got, err)
+	_, err = sweepEstimate(tickSweep(map[int]sweepMod{10: {delay: 30 * ms, fasterReturn: 7 * ms}}, 0), time.Second)
+	var ise *InconsistentSweepError
+	if !errors.As(err, &ise) {
+		t.Fatalf("err = %v, want *InconsistentSweepError", err)
+	}
+	if ise.MaxLowerSample != 10 || ise.MaxLower != 77*ms || ise.Samples[10].Relaxation != 21*ms {
+		t.Errorf("MaxLowerSample %d, MaxLower %v, relaxation %v; want 10, 77ms, 21ms",
+			ise.MaxLowerSample, ise.MaxLower, ise.Samples[10].Relaxation)
 	}
 }
 
@@ -240,9 +245,31 @@ func TestSweepTwoBackendsInconsistent(t *testing.T) {
 	// Odd samples come from a backend 40ms ahead. Sample 5 is the earliest it
 	// stamps after the tick (lower bound 108ms, RTT 28ms so no relaxation);
 	// sample 24 is the last even sample stamped before it (upper bound 70ms).
-	got, err := sweepEstimate(tickSweep(nil, 40*ms), time.Second)
+	samples := tickSweep(nil, 40*ms)
+	_, err := sweepEstimate(samples, time.Second)
 	if !errors.Is(err, ErrInconsistentSweep) {
-		t.Fatalf("got %+v, err = %v, want ErrInconsistentSweep", got, err)
+		t.Fatalf("err = %v, want ErrInconsistentSweep", err)
+	}
+	var ise *InconsistentSweepError
+	if !errors.As(err, &ise) {
+		t.Fatalf("err = %v, want *InconsistentSweepError", err)
+	}
+	if ise.MedianRTT != 30*ms || ise.Jitter != 2*ms {
+		t.Errorf("MedianRTT %v, Jitter %v; want 30ms, 2ms", ise.MedianRTT, ise.Jitter)
+	}
+	if ise.MaxLowerSample != 5 || ise.MaxLower != 108*ms || ise.MinUpperSample != 24 || ise.MinUpper != 70*ms {
+		t.Errorf("max lower %v (sample %d), min upper %v (sample %d); want 108ms (5), 70ms (24)",
+			ise.MaxLower, ise.MaxLowerSample, ise.MinUpper, ise.MinUpperSample)
+	}
+	if len(ise.Samples) != len(samples) {
+		t.Fatalf("len(Samples) = %d, want %d", len(ise.Samples), len(samples))
+	}
+	for i, s := range ise.Samples {
+		want := SweepSample{Sent: samples[i].Sent, Stamp: samples[i].Stamp, RTT: samples[i].RTT,
+			Relaxation: max(0, samples[i].RTT-30*ms)}
+		if s != want {
+			t.Errorf("Samples[%d] = %+v, want %+v", i, s, want)
+		}
 	}
 }
 
@@ -263,7 +290,13 @@ func TestSweepSlowCoarsePassStaleDate(t *testing.T) {
 		samples = append(samples, sweepSample{Sent: t0.Add(time.Second + time.Duration(i)*2*ms), Stamp: stale, RTT: 1 * ms})
 	}
 	got, err := sweepEstimate(samples, time.Second)
-	if !errors.Is(err, ErrInconsistentSweep) {
-		t.Fatalf("got %+v, err = %v, want ErrInconsistentSweep", got, err)
+	var ise *InconsistentSweepError
+	if !errors.As(err, &ise) {
+		t.Fatalf("got %+v, err = %v, want *InconsistentSweepError", got, err)
+	}
+	if ise.MaxLowerSample != 0 || ise.Samples[0].Relaxation != 2*ms || ise.MinUpperSample != 60 ||
+		ise.MaxLower-ise.MinUpper != 98*ms {
+		t.Errorf("max lower sample %d (relaxed %v), min upper sample %d, gap %v; want 0 (2ms), 60, 98ms",
+			ise.MaxLowerSample, ise.Samples[0].Relaxation, ise.MinUpperSample, ise.MaxLower-ise.MinUpper)
 	}
 }

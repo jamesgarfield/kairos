@@ -148,10 +148,12 @@ was a hit, and any error. Log or store whatever you need.
   from an edge calibrates against that edge's clock.
 - **A cached or stale `Date` fails loudly.** Calibration rejects responses
   carrying an `Age` header. It returns `ErrInconsistentSweep` when the sweep's
-  samples contradict each other, which typically means a CDN cache or
-  several backends with different clocks. On a network with very uneven
-  latency it can occasionally reject a valid sweep; retry the calibration if
-  that happens.
+  samples contradict each other, which typically means a CDN cache, several
+  backends with different clocks, or a sample delayed at the server. A sample
+  whose RTT shows it was delayed is discounted by that much, so a busy server
+  rarely trips this, but a delay hidden by a faster return path can; retry the
+  calibration if that happens. The error is an `*InconsistentSweepError`
+  carrying every sample and the constraints that missed, for diagnosis.
 - **Errors:** `ErrNoHit` (comes with a full `Result`), `ErrTooLate` (the
   target is too close to fire; nothing was sent), `ErrInconsistentSweep`, and
   `ErrCoarseReference` (an `HTTPReference` whose time is too coarse).
