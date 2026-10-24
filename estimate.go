@@ -39,13 +39,19 @@ func preciseEstimate(delays []time.Duration) Estimate {
 	}
 }
 
-// keptSweepSamples drops samples whose RTT exceeds twice the median RTT.
-func keptSweepSamples(samples []sweepSample) []sweepSample {
+// sweepMedianRTT returns the median RTT of samples, the basis of the RTT
+// cutoff and of each sample's relaxation.
+func sweepMedianRTT(samples []sweepSample) time.Duration {
 	rtts := make([]time.Duration, len(samples))
 	for i, s := range samples {
 		rtts[i] = s.RTT
 	}
-	cutoff := 2 * quantile(rtts, 0.5)
+	return quantile(rtts, 0.5)
+}
+
+// keptSweepSamples drops samples whose RTT exceeds twice the median RTT.
+func keptSweepSamples(samples []sweepSample) []sweepSample {
+	cutoff := 2 * sweepMedianRTT(samples)
 	var kept []sweepSample
 	for _, s := range samples {
 		if s.RTT <= cutoff {
@@ -55,13 +61,32 @@ func keptSweepSamples(samples []sweepSample) []sweepSample {
 	return kept
 }
 
+// sweepRelaxation is how far a sample's lower bound is lowered: its RTT in
+// excess of the median.
+func sweepRelaxation(rtt, median time.Duration) time.Duration {
+	return max(0, rtt-median)
+}
+
 // sweepEstimate intersects the per-sample constraints on the stamp delay D.
 // Each stamp is truncated to precision, so a sample constrains D to
-// [Stamp-Sent, Stamp+precision-Sent). The intersection is widened on each
-// side by the sweep jitter J (half the q10..q90 RTT spread). If the
-// constraints still miss each other, that is max(lowers)-J > min(uppers)+J,
-// it returns ErrInconsistentSweep wrapped with the gap.
+// [Stamp-Sent, Stamp+precision-Sent).
+//
+// A sample held at the server before it is stamped gets a late stamp, which
+// raises its lower bound by the hold; it cannot lower any bound. The hold also
+// adds to its RTT, so each kept sample's lower bound is relaxed by its RTT in
+// excess of the median (sweepRelaxation): a delayed sample is discounted by
+// what its own RTT shows, and no more. A hold hidden by a faster return path
+// is left to the jitter. The data cannot tell a hold from a clock that is
+// ahead, so a backend whose clock leads and whose RTT is longer by as much
+// has its lead discounted as delay, and the estimate follows the other
+// backends.
+//
+// The intersection is widened on each side by the sweep jitter J (half the
+// q10..q90 RTT spread). If the constraints still miss each other, that is
+// max(lowers)-J > min(uppers)+J, it returns ErrInconsistentSweep wrapped with
+// the gap.
 func sweepEstimate(samples []sweepSample, precision time.Duration) (Estimate, error) {
+	med := sweepMedianRTT(samples)
 	var kept []time.Duration
 	var lo, hi time.Duration
 	n := 0
@@ -69,6 +94,7 @@ func sweepEstimate(samples []sweepSample, precision time.Duration) (Estimate, er
 		kept = append(kept, s.RTT)
 		l := s.Stamp.Sub(s.Sent)
 		u := l + precision
+		l -= sweepRelaxation(s.RTT, med)
 		if n == 0 {
 			lo, hi = l, u
 		} else {
