@@ -39,8 +39,8 @@ func preciseEstimate(delays []time.Duration) Estimate {
 	}
 }
 
-// sweepMedianRTT returns the median RTT of samples, the basis of the RTT
-// cutoff and of each sample's relaxation.
+// sweepMedianRTT returns the median RTT of samples, the basis of each
+// sample's relaxation and of the jitter cutoff.
 func sweepMedianRTT(samples []sweepSample) time.Duration {
 	rtts := make([]time.Duration, len(samples))
 	for i, s := range samples {
@@ -49,7 +49,9 @@ func sweepMedianRTT(samples []sweepSample) time.Duration {
 	return quantile(rtts, 0.5)
 }
 
-// keptSweepSamples drops samples whose RTT exceeds twice the median RTT.
+// keptSweepSamples drops samples whose RTT exceeds twice the median RTT. The
+// rest are typical of the path: they set the sweep jitter and the RTTs a
+// Calibration reports.
 func keptSweepSamples(samples []sweepSample) []sweepSample {
 	cutoff := 2 * sweepMedianRTT(samples)
 	var kept []sweepSample
@@ -73,7 +75,7 @@ func sweepRelaxation(rtt, median time.Duration) time.Duration {
 //
 // A sample held at the server before it is stamped gets a late stamp, which
 // raises its lower bound by the hold; it cannot lower any bound. The hold also
-// adds to its RTT, so each kept sample's lower bound is relaxed by its RTT in
+// adds to its RTT, so each sample's lower bound is relaxed by its RTT in
 // excess of the median (sweepRelaxation): a delayed sample is discounted by
 // what its own RTT shows, and no more. A hold hidden by a faster return path
 // is left to the jitter. The data cannot tell a hold from a clock that is
@@ -81,32 +83,40 @@ func sweepRelaxation(rtt, median time.Duration) time.Duration {
 // has its lead discounted as delay, and the estimate follows the other
 // backends.
 //
-// The intersection is widened on each side by the sweep jitter J (half the
-// q10..q90 RTT spread). If the constraints still miss each other, that is
-// max(lowers)-J > min(uppers)+J, it returns ErrInconsistentSweep wrapped with
-// the gap.
+// Every sample constrains D, however long its RTT: relaxation already
+// discounts its lower bound, and its upper bound holds since a hold only makes
+// a stamp later. Dropping slow samples would lose constraints; if a slow
+// coarse pass were dropped, the fine pass alone spans too little to expose a
+// stale Date.
+//
+// The intersection is widened on each side by the sweep jitter J, half the
+// q10..q90 RTT spread of keptSweepSamples. If the constraints still miss each
+// other, that is max(lowers)-J > min(uppers)+J, it returns ErrInconsistentSweep
+// wrapped with the gap.
 func sweepEstimate(samples []sweepSample, precision time.Duration) (Estimate, error) {
+	if len(samples) == 0 {
+		return Estimate{Source: SourceSweep}, nil
+	}
 	med := sweepMedianRTT(samples)
-	var kept []time.Duration
 	var lo, hi time.Duration
-	n := 0
-	for _, s := range keptSweepSamples(samples) {
-		kept = append(kept, s.RTT)
+	loAt, hiAt := -1, -1
+	for i, s := range samples {
 		l := s.Stamp.Sub(s.Sent)
 		u := l + precision
 		l -= sweepRelaxation(s.RTT, med)
-		if n == 0 {
-			lo, hi = l, u
-		} else {
-			lo = max(lo, l)
-			hi = min(hi, u)
+		if loAt < 0 || l > lo {
+			lo, loAt = l, i
 		}
-		n++
+		if hiAt < 0 || u < hi {
+			hi, hiAt = u, i
+		}
 	}
-	if n == 0 {
-		return Estimate{Source: SourceSweep}, nil
+	kept := keptSweepSamples(samples)
+	rtts := make([]time.Duration, len(kept))
+	for i, s := range kept {
+		rtts[i] = s.RTT
 	}
-	j := (quantile(kept, 0.9) - quantile(kept, 0.1)) / 2
+	j := (quantile(rtts, 0.9) - quantile(rtts, 0.1)) / 2
 	if lo-j > hi+j {
 		return Estimate{}, fmt.Errorf("%w: max(lowers) %v exceeds min(uppers) %v by %v, more than twice the jitter %v",
 			ErrInconsistentSweep, lo, hi, lo-hi, j)
