@@ -2,6 +2,9 @@ package kairos
 
 import (
 	"context"
+	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -73,5 +76,111 @@ func TestRunCancelledDuringWait(t *testing.T) {
 	_, err := Run(ctx, Config{Target: time.Now().Add(time.Hour), Request: reqFor(srv.URL)})
 	if err != context.DeadlineExceeded {
 		t.Fatalf("err = %v, want DeadlineExceeded", err)
+	}
+}
+
+// flipLogger records messages and calls onLog after each one.
+type flipLogger struct {
+	recordingLogger
+	onLog func()
+}
+
+func (l *flipLogger) Logf(format string, args ...any) {
+	l.recordingLogger.Logf(format, args...)
+	l.onLog()
+}
+
+// retries counts the logged calibration retries.
+func retries(l *flipLogger) int {
+	n := 0
+	for _, m := range l.messages() {
+		if strings.Contains(m, "retrying") {
+			n++
+		}
+	}
+	return n
+}
+
+// runSplit runs a Date sweep against a server that, while split is set,
+// alternates per request between two clocks 90s apart, so any subset of the
+// sweep's samples is inconsistent. Each logged message calls onLog.
+func runSplit(t *testing.T, split *atomic.Bool, onLog func(), targetIn time.Duration, attempts int) (*flipLogger, Result, error) {
+	t.Helper()
+	var n atomic.Int64
+	srv := newFakeServer(t, fakeOpts{Date: func(now time.Time) time.Time {
+		if split.Load() && n.Add(1)%2 == 0 {
+			return now.Add(-90 * time.Second)
+		}
+		return now
+	}})
+	log := &flipLogger{onLog: onLog}
+	res, err := Run(context.Background(), Config{
+		Target:              time.Now().Add(targetIn),
+		Workers:             2,
+		GiveUp:              200 * ms,
+		StopOnFirstHit:      true,
+		CalibrationAttempts: attempts,
+		Request:             reqFor(srv.URL),
+		Logger:              log,
+	})
+	return log, res, err
+}
+
+func TestRunRetriesInconsistentSweep(t *testing.T) {
+	var split atomic.Bool
+	split.Store(true)
+	// The first attempt fails; its retry log reunites the clocks.
+	log, res, err := runSplit(t, &split, func() { split.Store(false) }, 7*time.Second, 3)
+	if err != nil {
+		t.Fatalf("Run: %v (log %q)", err, log.messages())
+	}
+	if n := retries(log); n != 1 {
+		t.Errorf("%d retries, want 1 (log %q)", n, log.messages())
+	}
+	if res.Best == nil {
+		t.Error("Best is nil")
+	}
+}
+
+func TestRunGivesUpAfterCalibrationAttempts(t *testing.T) {
+	var split atomic.Bool
+	split.Store(true)
+	log, _, err := runSplit(t, &split, func() {}, 20*time.Second, 2)
+	var ise *InconsistentSweepError
+	if !errors.As(err, &ise) {
+		t.Fatalf("err = %v, want *InconsistentSweepError", err)
+	}
+	if n := retries(log); n != 1 {
+		t.Errorf("%d retries, want 1 (log %q)", n, log.messages())
+	}
+}
+
+func TestRunNoRetryWithoutTime(t *testing.T) {
+	var split atomic.Bool
+	split.Store(true)
+	// A sweep takes over 1s, so a second one cannot also leave that long
+	// before a target 2s away.
+	log, _, err := runSplit(t, &split, func() {}, 2*time.Second, 3)
+	if !errors.Is(err, ErrInconsistentSweep) {
+		t.Fatalf("err = %v, want ErrInconsistentSweep", err)
+	}
+	if n := retries(log); n != 0 {
+		t.Errorf("%d retries, want 0 (log %q)", n, log.messages())
+	}
+}
+
+func TestRunNoRetryOtherCalibrationErrors(t *testing.T) {
+	srv := newFakeServer(t, fakeOpts{NoDate: true})
+	log := &flipLogger{onLog: func() {}}
+	_, err := Run(context.Background(), Config{
+		Target:  time.Now().Add(20 * time.Second),
+		Request: reqFor(srv.URL),
+		Logger:  log,
+	})
+	if err == nil || errors.Is(err, ErrInconsistentSweep) {
+		t.Fatalf("err = %v, want a calibration probe error", err)
+	}
+	if n := retries(log); n != 0 {
+		t.Errorf("%d retries, want 0 (log %q)", n, log.messages())
 	}
 }

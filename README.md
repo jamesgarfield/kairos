@@ -45,7 +45,9 @@ fmt.Printf("best hit: worker %d, %v after target\n",
 ```
 
 `Run` can be called well before the target. It waits until `CalibrateBefore`
-ahead of the target (30s by default), then calibrates and fires.
+ahead of the target (30s by default), then calibrates and fires. If a Date
+sweep comes back inconsistent, it calibrates again, up to
+`CalibrationAttempts` times in all (3 by default), while there is time.
 
 For finer control, split the steps. For example, you can calibrate early,
 check the numbers, and then commit:
@@ -119,7 +121,7 @@ cfg.CalibrationServerTime = kairos.BodyLayout("2006-01-02 15:04:05.000000", time
 ```
 
 Defaults for the tuning knobs: 8 workers, 5ms spacing, 10 calibration rounds,
-2s give-up, 150ms rewarm, 2ms spin, 500ms in-flight grace and 5s request
+3 calibration attempts in `Run`, 2s give-up, 150ms rewarm, 2ms spin, 500ms in-flight grace and 5s request
 timeout. See the `Config` doc comments for the full list.
 
 ## Results, not logs
@@ -151,8 +153,9 @@ was a hit, and any error. Log or store whatever you need.
   samples contradict each other, which typically means a CDN cache, several
   backends with different clocks, or a sample delayed at the server. A sample
   whose RTT shows it was delayed is discounted by that much, so a busy server
-  rarely trips this, but a delay hidden by a faster return path can; retry the
-  calibration if that happens. The error is an `*InconsistentSweepError`
+  rarely trips this, but a delay hidden by a faster return path can. `Run`
+  retries it (see `CalibrationAttempts`); with the split API, call `Calibrate`
+  again. The error is an `*InconsistentSweepError`
   carrying every sample and the constraints that missed, for diagnosis.
 - **Errors:** `ErrNoHit` (comes with a full `Result`), `ErrTooLate` (the
   target is too close to fire; nothing was sent), `ErrInconsistentSweep`, and

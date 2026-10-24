@@ -20,7 +20,8 @@ func TestWithDefaults(t *testing.T) {
 		c.RewarmBefore != 150*time.Millisecond || c.Spin != 2*time.Millisecond ||
 		c.GiveUp != 2*time.Second || c.CalibrateBefore != 30*time.Second ||
 		c.InFlightGrace != 500*time.Millisecond || c.RequestTimeout != 5*time.Second ||
-		c.SweepStep != 2*time.Millisecond || c.MaxBodyBytes != 1<<20 || c.Lead != 0 {
+		c.SweepStep != 2*time.Millisecond || c.MaxBodyBytes != 1<<20 || c.Lead != 0 ||
+		c.CalibrationAttempts != 3 {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
 	if c.ServerTime == nil || c.CalibrationServerTime == nil || c.Calibration == nil ||
@@ -45,12 +46,13 @@ func TestWithDefaultsPreservesExplicit(t *testing.T) {
 		RewarmBefore: time.Second, Spin: time.Microsecond, GiveUp: time.Minute,
 		CalibrateBefore: time.Hour, InFlightGrace: time.Second, RequestTimeout: time.Minute,
 		SweepStep: time.Second, MaxBodyBytes: 7, Lead: 9 * time.Millisecond,
+		CalibrationAttempts: 5,
 	}.withDefaults()
 	if c.Workers != 3 || c.Spacing != time.Millisecond || c.CalibrationRounds != 4 ||
 		c.RewarmBefore != time.Second || c.Spin != time.Microsecond || c.GiveUp != time.Minute ||
 		c.CalibrateBefore != time.Hour || c.InFlightGrace != time.Second ||
 		c.RequestTimeout != time.Minute || c.SweepStep != time.Second ||
-		c.MaxBodyBytes != 7 || c.Lead != 9*time.Millisecond {
+		c.MaxBodyBytes != 7 || c.Lead != 9*time.Millisecond || c.CalibrationAttempts != 5 {
 		t.Fatalf("explicit values not preserved: %+v", c)
 	}
 	if _, _ = c.Calibration(context.Background()); !calledCal {
@@ -78,6 +80,7 @@ func TestValidate(t *testing.T) {
 		{"negative grace", Config{Target: t0, Request: testRequest, InFlightGrace: -1}, "InFlightGrace"},
 		{"negative request timeout", Config{Target: t0, Request: testRequest, RequestTimeout: -1}, "RequestTimeout"},
 		{"negative sweep step", Config{Target: t0, Request: testRequest, SweepStep: -1}, "SweepStep"},
+		{"negative calibration attempts", Config{Target: t0, Request: testRequest, CalibrationAttempts: -1}, "CalibrationAttempts"},
 		{"negative max body", Config{Target: t0, Request: testRequest, MaxBodyBytes: -1}, "MaxBodyBytes"},
 		{"negative rounds", Config{Target: t0, Request: testRequest, CalibrationRounds: -1}, "CalibrationRounds"},
 		{"unknown policy", Config{Target: t0, Request: testRequest, Policy: Policy(99)}, "Policy"},
