@@ -42,6 +42,13 @@ type Config struct {
 	// Target. A Date sweep takes about 1-2s. Default 30s.
 	CalibrateBefore time.Duration
 
+	// CalibrationAttempts is used by Run only: how many times it calibrates
+	// when a Date sweep fails with ErrInconsistentSweep. Run retries only
+	// while another attempt as long as the last would end at least that long
+	// again before Target on the local clock. Other calibration errors are
+	// not retried. Must be at least 1 after defaults. Default 3.
+	CalibrationAttempts int
+
 	// RewarmBefore is how long before each worker's slot it sends one real
 	// Request to rewarm its connection. Rewarm requests are not recorded in
 	// Result; a rewarm failure is only logged. Default 150ms.
@@ -131,6 +138,9 @@ func (c Config) withDefaults() Config {
 	if c.CalibrationRounds == 0 {
 		c.CalibrationRounds = 10
 	}
+	if c.CalibrationAttempts == 0 {
+		c.CalibrationAttempts = 3
+	}
 	if c.RewarmBefore == 0 {
 		c.RewarmBefore = 150 * time.Millisecond
 	}
@@ -218,6 +228,9 @@ func (c Config) validate() error {
 	}
 	if c.CalibrationRounds < 1 {
 		return fmt.Errorf("kairos: invalid config: CalibrationRounds must be at least 1 (got %d)", c.CalibrationRounds)
+	}
+	if c.CalibrationAttempts < 1 {
+		return fmt.Errorf("kairos: invalid config: CalibrationAttempts must be at least 1 (got %d)", c.CalibrationAttempts)
 	}
 	switch c.Policy {
 	case PolicyInterval, PolicyReferenceWins, PolicyTargetWins:

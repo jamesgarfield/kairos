@@ -19,6 +19,9 @@ type fakeOpts struct {
 	// FixedDate, if non-nil, is sent as the Date header on every response
 	// (a stale or cached Date).
 	FixedDate *time.Time
+	// Date, if non-nil, returns the Date header value for each response,
+	// taking precedence over FixedDate.
+	Date      func(serverNow time.Time) time.Time
 	Age       string                // if non-empty, sent as the Age header
 	OnRequest func(r *http.Request) // if non-nil, called on arrival of each request
 }
@@ -42,6 +45,8 @@ func newFakeServer(t *testing.T, o fakeOpts) *httptest.Server {
 		switch {
 		case o.NoDate:
 			w.Header()["Date"] = nil
+		case o.Date != nil:
+			w.Header().Set("Date", o.Date(serverNow).UTC().Format(http.TimeFormat))
 		case o.FixedDate != nil:
 			w.Header().Set("Date", o.FixedDate.UTC().Format(http.TimeFormat))
 		default:

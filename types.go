@@ -3,6 +3,7 @@ package kairos
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -116,9 +117,40 @@ var (
 	// worker's fire time has already passed. Nothing is sent.
 	ErrTooLate = errors.New("kairos: target too soon to fire")
 
-	// ErrInconsistentSweep is returned, wrapped with the gap, by Calibrate
-	// and Run when the samples of a Date sweep cannot all be right: their
-	// constraints miss each other by more than the measured jitter.
+	// ErrInconsistentSweep is returned, wrapped in an *InconsistentSweepError,
+	// by Calibrate and Run when the samples of a Date sweep cannot all be
+	// right: their constraints miss each other by more than the measured
+	// jitter.
 	ErrInconsistentSweep = errors.New("kairos: inconsistent Date sweep: the samples' constraints do not intersect; " +
-		"likely a cached or stale Date, or several backends with different clocks")
+		"likely a cached or stale Date, several backends with different clocks, or a sample delayed at the server")
 )
+
+// SweepSample is one Date sweep sample, as reported by InconsistentSweepError.
+// It constrains the stamp delay to [Stamp-Sent-Relaxation, Stamp-Sent+precision).
+type SweepSample struct {
+	Sent       time.Time     // local send time
+	Stamp      time.Time     // server Date
+	RTT        time.Duration // round-trip time
+	Relaxation time.Duration // max(0, RTT - median RTT)
+}
+
+// InconsistentSweepError carries the samples of a failed Date sweep and the
+// constraints that missed each other. It unwraps to ErrInconsistentSweep.
+type InconsistentSweepError struct {
+	Samples        []SweepSample // every sample, coarse pass then fine pass, in send order
+	MedianRTT      time.Duration // median RTT of all samples
+	Jitter         time.Duration // J: half the q10..q90 spread of the RTTs up to twice MedianRTT
+	MaxLower       time.Duration // largest relaxed lower bound
+	MaxLowerSample int           // index in Samples of the sample setting MaxLower
+	MinUpper       time.Duration // smallest upper bound
+	MinUpperSample int           // index in Samples of the sample setting MinUpper
+}
+
+func (e *InconsistentSweepError) Error() string {
+	return fmt.Sprintf("%v: max(lowers) %v (sample %d, relaxed by %v) exceeds min(uppers) %v (sample %d) by %v, "+
+		"more than twice the jitter %v (median RTT %v)",
+		ErrInconsistentSweep, e.MaxLower, e.MaxLowerSample, e.Samples[e.MaxLowerSample].Relaxation,
+		e.MinUpper, e.MinUpperSample, e.MaxLower-e.MinUpper, e.Jitter, e.MedianRTT)
+}
+
+func (e *InconsistentSweepError) Unwrap() error { return ErrInconsistentSweep }

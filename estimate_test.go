@@ -59,11 +59,12 @@ func TestSweepEstimate(t *testing.T) {
 		t.Errorf("err %v, got %+v, want %+v", err, got, want)
 	}
 
-	// Outlier with a wildly inconsistent stamp and a long RTT is dropped.
+	// A stamp 5s late cannot be explained by a 50ms RTT, so it fails loudly
+	// rather than being dropped.
 	sent := base.Add(700 * ms)
 	samples = append(samples, sweepSample{Sent: sent, Stamp: sent.Add(5 * time.Second).Truncate(time.Second), RTT: 50 * ms})
-	if got, err := sweepEstimate(samples, time.Second); err != nil || got != want {
-		t.Errorf("with outlier: err %v, got %+v, want %+v", err, got, want)
+	if got, err := sweepEstimate(samples, time.Second); !errors.Is(err, ErrInconsistentSweep) {
+		t.Errorf("with outlier: got %+v, err = %v, want ErrInconsistentSweep", got, err)
 	}
 }
 
@@ -153,5 +154,149 @@ func TestSweepEstimateInconsistentBeyondJitter(t *testing.T) {
 	got, err := sweepEstimate(jitterSamples(305*ms, -700*ms), time.Second)
 	if !errors.Is(err, ErrInconsistentSweep) {
 		t.Fatalf("got %+v, err = %v, want ErrInconsistentSweep", got, err)
+	}
+}
+
+// sweepMod perturbs one tickSweep sample: delay holds it at the server before
+// it is stamped, adding the same to its RTT; fasterReturn shortens its return
+// path, taking that off its RTT again.
+type sweepMod struct{ delay, fasterReturn time.Duration }
+
+// tickSweep simulates a fine pass: 51 samples 2ms apart straddling a Date
+// tick, true stamp delay 68ms, RTT 30ms ±2ms (median 30ms, J = 2ms). Sample i
+// is sent 118-2i ms before the tick, so undisturbed it has lower bound
+// 118-2i ms if stamped after the tick (i >= 25) and upper bound 118-2i ms
+// otherwise. Odd samples are stamped by a clock skew ahead.
+func tickSweep(mods map[int]sweepMod, skew time.Duration) []sweepSample {
+	const d = 68 * ms
+	tick := time.Date(2026, 10, 24, 13, 0, 0, 0, time.UTC)
+	var out []sweepSample
+	for i := range 51 {
+		sent := tick.Add(-118*ms + time.Duration(i)*2*ms)
+		m := mods[i]
+		stamp := sent.Add(d + m.delay)
+		if i%2 == 1 {
+			stamp = stamp.Add(skew)
+		}
+		rtt := 30*ms + time.Duration(i%5-2)*ms + m.delay - m.fasterReturn
+		out = append(out, sweepSample{Sent: sent, Stamp: stamp.Truncate(time.Second), RTT: rtt})
+	}
+	return out
+}
+
+func TestSweepToleratesOneDelayedSample(t *testing.T) {
+	clean, err := sweepEstimate(tickSweep(nil, 0), time.Second)
+	if err != nil {
+		t.Fatalf("clean sweep: %v", err)
+	}
+	if clean.Lo > 68*ms || clean.Hi < 68*ms {
+		t.Fatalf("clean sweep %+v does not contain 68ms", clean)
+	}
+	// Sample 20 is held 20ms at the server, so it is stamped after the tick
+	// (lower bound 78ms, above min(uppers) 70ms); its RTT 48ms is kept.
+	got, err := sweepEstimate(tickSweep(map[int]sweepMod{20: {delay: 20 * ms}}, 0), time.Second)
+	if err != nil {
+		t.Fatalf("one delayed sample broke the sweep: %v", err)
+	}
+	if got != clean {
+		t.Errorf("got %+v, want the clean estimate %+v", got, clean)
+	}
+}
+
+func TestSweepRelaxesLongRTTSample(t *testing.T) {
+	clean, err := sweepEstimate(tickSweep(nil, 0), time.Second)
+	if err != nil {
+		t.Fatalf("clean sweep: %v", err)
+	}
+	// Sample 20 is held 40ms: lower bound 78ms, RTT 68ms, above 2×median =
+	// 60ms. It still constrains the sweep, relaxed by 38ms to 40ms.
+	got, err := sweepEstimate(tickSweep(map[int]sweepMod{20: {delay: 40 * ms}}, 0), time.Second)
+	if err != nil || got != clean {
+		t.Errorf("err %v, got %+v, want the clean estimate %+v", err, got, clean)
+	}
+}
+
+func TestSweepDelayedSampleFasterReturn(t *testing.T) {
+	// Sample 10 (RTT 28ms undisturbed) is held 30ms, giving lower bound 98ms
+	// against min(uppers) 70ms. A return path 3ms faster hides 3ms of the
+	// delay: RTT 55ms, relaxation 25ms, relaxed lower 73ms. The 3ms left over
+	// is within 2J = 4ms.
+	got, err := sweepEstimate(tickSweep(map[int]sweepMod{10: {delay: 30 * ms, fasterReturn: 3 * ms}}, 0), time.Second)
+	if err != nil {
+		t.Fatalf("partially relaxed sample within jitter: %v", err)
+	}
+	if d := got.Point - 68*ms; d < -4*ms || d > 4*ms {
+		t.Errorf("Point %v is more than 2J from 68ms (%+v)", got.Point, got)
+	}
+
+	// 7ms faster: relaxation 21ms, relaxed lower 77ms, 7ms beyond min(uppers).
+	_, err = sweepEstimate(tickSweep(map[int]sweepMod{10: {delay: 30 * ms, fasterReturn: 7 * ms}}, 0), time.Second)
+	var ise *InconsistentSweepError
+	if !errors.As(err, &ise) {
+		t.Fatalf("err = %v, want *InconsistentSweepError", err)
+	}
+	if ise.MaxLowerSample != 10 || ise.MaxLower != 77*ms || ise.Samples[10].Relaxation != 21*ms {
+		t.Errorf("MaxLowerSample %d, MaxLower %v, relaxation %v; want 10, 77ms, 21ms",
+			ise.MaxLowerSample, ise.MaxLower, ise.Samples[10].Relaxation)
+	}
+}
+
+func TestSweepTwoBackendsInconsistent(t *testing.T) {
+	// Odd samples come from a backend 40ms ahead. Sample 5 is the earliest it
+	// stamps after the tick (lower bound 108ms, RTT 28ms so no relaxation);
+	// sample 24 is the last even sample stamped before it (upper bound 70ms).
+	samples := tickSweep(nil, 40*ms)
+	_, err := sweepEstimate(samples, time.Second)
+	if !errors.Is(err, ErrInconsistentSweep) {
+		t.Fatalf("err = %v, want ErrInconsistentSweep", err)
+	}
+	var ise *InconsistentSweepError
+	if !errors.As(err, &ise) {
+		t.Fatalf("err = %v, want *InconsistentSweepError", err)
+	}
+	if ise.MedianRTT != 30*ms || ise.Jitter != 2*ms {
+		t.Errorf("MedianRTT %v, Jitter %v; want 30ms, 2ms", ise.MedianRTT, ise.Jitter)
+	}
+	if ise.MaxLowerSample != 5 || ise.MaxLower != 108*ms || ise.MinUpperSample != 24 || ise.MinUpper != 70*ms {
+		t.Errorf("max lower %v (sample %d), min upper %v (sample %d); want 108ms (5), 70ms (24)",
+			ise.MaxLower, ise.MaxLowerSample, ise.MinUpper, ise.MinUpperSample)
+	}
+	if len(ise.Samples) != len(samples) {
+		t.Fatalf("len(Samples) = %d, want %d", len(ise.Samples), len(samples))
+	}
+	for i, s := range ise.Samples {
+		want := SweepSample{Sent: samples[i].Sent, Stamp: samples[i].Stamp, RTT: samples[i].RTT,
+			Relaxation: max(0, samples[i].RTT-30*ms)}
+		if s != want {
+			t.Errorf("Samples[%d] = %+v, want %+v", i, s, want)
+		}
+	}
+}
+
+func TestSweepSlowCoarsePassStaleDate(t *testing.T) {
+	// Every response carries the same stale Date. The coarse pass (10 samples
+	// over 900ms) is slow, RTT 3ms, above 2×median = 2ms; the fine pass (51
+	// samples 2ms apart, from 1s on) has RTT 1ms. The fine pass alone spans
+	// 100ms, consistent with any stamp, so the slow coarse samples must still
+	// constrain the sweep: coarse sample 0's lower bound, relaxed by 2ms,
+	// misses the last fine sample's upper bound by 98ms.
+	t0 := time.Date(2026, 10, 24, 13, 0, 0, 0, time.UTC)
+	stale := t0.Add(-90 * time.Second)
+	var samples []sweepSample
+	for i := range 10 {
+		samples = append(samples, sweepSample{Sent: t0.Add(time.Duration(i) * 100 * ms), Stamp: stale, RTT: 3 * ms})
+	}
+	for i := range 51 {
+		samples = append(samples, sweepSample{Sent: t0.Add(time.Second + time.Duration(i)*2*ms), Stamp: stale, RTT: 1 * ms})
+	}
+	got, err := sweepEstimate(samples, time.Second)
+	var ise *InconsistentSweepError
+	if !errors.As(err, &ise) {
+		t.Fatalf("got %+v, err = %v, want *InconsistentSweepError", got, err)
+	}
+	if ise.MaxLowerSample != 0 || ise.Samples[0].Relaxation != 2*ms || ise.MinUpperSample != 60 ||
+		ise.MaxLower-ise.MinUpper != 98*ms {
+		t.Errorf("max lower sample %d (relaxed %v), min upper sample %d, gap %v; want 0 (2ms), 60, 98ms",
+			ise.MaxLowerSample, ise.Samples[0].Relaxation, ise.MinUpperSample, ise.MaxLower-ise.MinUpper)
 	}
 }
